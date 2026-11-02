@@ -1,10 +1,11 @@
 # Rank-Inference Thesis
+# Nr.X Main Script
 # Author: Venüs Kocabas
 # Last Updated: 31.10.2026
 
 # 0. Importing Libraries --------------------------------------------------
 
-libraries <- c('dplyr', 'tidyr', 'readxl', 'writexl', 'lubridate', 'tidyquant')
+libraries <- c('dplyr', 'tidyr', 'readxl', 'writexl', 'lubridate', 'tidyquant', 'csranks')
 missingLibs <- libraries[!(libraries %in% installed.packages()[, 'Package'])]
 if (length(missingLibs) > 0) install.packages(missingLibs)
 invisible(lapply(libraries, library, character.only = TRUE))
@@ -20,13 +21,11 @@ lastTrade <- function(df, datecol = date) {
   } else {
     date_col_str <- as.character(datecol)
   }
-  
   # Fallback check if the specified column isn't found
   if (!date_col_str %in% names(df)) {
     if ('DATES' %in% names(df)) date_col_str <- 'DATES'
     else if ('date' %in% names(df)) date_col_str <- 'date'
   }
-  
   date_sym <- rlang::sym(date_col_str)
   has_symbol <- 'symbol' %in% names(df)
   
@@ -115,7 +114,7 @@ MonthlyReturns <- function(dataset, adjprcol) {
 
 # 2.A Creating the US Treasury Data Set -----------------------------------
 
-dataDirUS <- file.path('C:/Users/user/Desktop/THESIS/DoD data/us treasury')
+dataDirUS <- file.path('C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/US Treasury Data')
 filePathsUS <- list.files(dataDirUS, pattern = '\\.csv$', full.names = TRUE)
 
 treasury_list <- list()
@@ -154,19 +153,19 @@ UsTreasuryData <- dplyr::bind_rows(treasury_list) |>
 # 2.B Creating the Individual Data Sets for DOW30 -------------------------
 
 # Company Ticker Mapping per Years
-DoDdataPath <-  'C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data.xlsx' 
+DoDdataPath <-  'C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/DoD_Mapping.xlsx' 
 
 # Data from 'Datastream'
-DOW30Data <- readxl::read_xlsx('C:/Users/user/Desktop/THESIS/DoD data/DOW30 Data/Data VK.xlsx', sheet = 'Tabelle1')
+DOW30Data <- readxl::read_xlsx('C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/DOW30 Data/DatastreamDOW30.xlsx', sheet = 'Tabelle1')
 
 # Initial Column Cleaning
 CLEANDOW30Data <- DOW30Data[-1,] |>
-  dplyr::select(-c('...2',                                        # DATE
-                   '#ERROR...567','#ERROR...568','#ERROR...569',  # UTX Missing Stuff
+  dplyr::select(-c('...2',                                        # DATE formatted as 'date' in excel
+                   '#ERROR...567','#ERROR...568','#ERROR...569',  # UTX Missing Stuff -> RTX already has everything in it (Raytheon)
                    '#ERROR...570','#ERROR...571','#ERROR...572',
                    '#ERROR...573','#ERROR...574','#ERROR...575',
                    '#ERROR...576','#ERROR...577','#ERROR...578',
-                   '#ERROR...723','#ERROR...724','#ERROR...725',  # S&P 500 was absent?
+                   '#ERROR...723','#ERROR...724','#ERROR...725',  # S&P 500 was absent? --> will use tidyquant for the SPY data (Yahoo Finance)
                    '#ERROR...726','#ERROR...727','#ERROR...728',
                    '#ERROR...729','#ERROR...730','#ERROR...731',
                    '#ERROR...732','#ERROR...733','#ERROR...734',
@@ -175,15 +174,11 @@ CLEANDOW30Data <- DOW30Data[-1,] |>
   dplyr::mutate(dplyr::across(everything(), ~ ifelse(.x == 'NA', NA, .x)))
 
 # Personal Mapping Sheet with the Columns from DOW30Data
-mappingSheet <- readxl::read_xlsx('C:/Users/user/Desktop/THESIS/DoD data/DOW30 Data/Data VK.xlsx', sheet = 'Sheet1')
+mappingSheet <- readxl::read_xlsx('C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/DOW30 Data/DatastreamDOW30.xlsx', sheet = 'Sheet1')
 
 # Ticker x Company Name Matching
 # Mapping Manually Done in the Excel
-neededCompanies <- readxl::read_xlsx(DoDdataPath, sheet = 'NeededData(15-25)x') |> 
-  (\(df) {
-    df |>
-    dplyr::filter(`Last Appeared` >= 2015)
-    })()
+neededCompanies <- readxl::read_xlsx(DoDdataPath, sheet = 'NeededData')
 
 # Years that would be investigated (2015 - 2025)
 DOW30Years <- seq(2015, 2025)
@@ -230,7 +225,7 @@ SPY_monthly <- lastTrade(SPY) |>
 # 2.D Additional Individual Adjustments for the DOW30 Data Sets -----------
 
 # DD
-DDratio <- 1.2820
+DDratio <- 1.2820 # taken from the SEC filings for the merger!
 
 DD <- DD1 |>
   dplyr::filter(DATES < as.Date('2017-09-01')) |>
@@ -294,42 +289,55 @@ CAPMFunction <- function(dataset, DOWyear) {
   return(CAPM)
 }
 
-# 4.1 DOW 2015 ------------------------------------------------------------
+# 4. Running the CAPM Calculation for all of the DOW Years ----------------
 
-DOW2015 <- list()
+minObs <- 12  # minimum monthly observations in the 5-year window
 
-for (i in seq_along(DOWcomps_2015)) {
-  currentComp     <- get(DOWcomps_2015[i])
-  currentCompName <- sub("_monthly$", "", DOWcomps_2015[i])
-  CAPMdata        <- FinalDataSet(currentComp)
+for (yr in DOW30Years) {
+  list_name <- paste0('DOW', yr)
+  year_list <- list()
   
-  assign(paste0(currentCompName, "_CAPMData"), CAPMdata, envir = .GlobalEnv)
-  
-  capm <- CAPMFunction(CAPMdata, 2015)
-  
-  DOW2015[[currentCompName]] <- list(
-    summary   = capm,
-    intercept = capm$coefficients["(Intercept)", "Estimate"]
-  )
+  comps <- get(paste0('DOWcomps_', yr))   # <- constituents of THIS year
+  for (i in seq_along(comps)) {
+    currentComp     <- get(comps[i])
+    currentCompName <- sub('_monthly$', '', comps[i])
+    CAPMdata        <- FinalDataSet(currentComp)
+    
+    assign(paste0(currentCompName, '_CAPMData'), CAPMdata, envir = .GlobalEnv)
+    
+    # Skip regressions with too little data
+    nObs <- sum(lubridate::year(CAPMdata$date) %in% (yr - 5):(yr - 1))
+    
+    capm <- if (nObs >= minObs) {
+      tryCatch(CAPMFunction(CAPMdata, yr), error = function(e) NULL)
+    } else {
+      NULL
+    }
+    
+    year_list[[currentCompName]] <- list(
+      summary   = capm,
+      intercept = if (is.null(capm)) NA_real_ else capm$coefficients['(Intercept)', 'Estimate'],
+      SE        = if (is.null(capm)) NA_real_ else capm$coefficients['(Intercept)', 'Std. Error']
+    )
+  }
+  assign(list_name, year_list, envir = .GlobalEnv)
 }
 
-sapply(DOW2015, function(x) x$intercept)
+for (yr in DOW30Years) {
+  year_list <- get(paste0('DOW', yr))
+  intercepts <- sapply(year_list, function(x) x$intercept)
+  assign(paste0('DOW', yr), year_list[order(intercepts, decreasing = TRUE)], envir = .GlobalEnv)
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+All_CAPM_Summary <- lapply(DOW30Years, function(yr) {
+  year_list <- get(paste0('DOW', yr))
+  
+  data.frame(
+    symbol    = names(year_list),
+    alpha_hat = sapply(year_list, function(x) x$intercept),
+    se        = sapply(year_list, function(x) x$SE),
+    row.names = NULL)}) |>
+  setNames(DOW30Years)
 
 
 
