@@ -218,13 +218,13 @@ for (i in seq_along(mappingSheet)) {
 
 # 2.C Adding the SPY Data Set ---------------------------------------------
 
-load('SPYdata.Rda')
+load('C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/SPYdata.Rda')
 SPY_monthly <- lastTrade(SPY) |>
   MonthlyReturns(adjprcol = adjusted)
 
 # 2.D Additional Individual Adjustments for the DOW30 Data Sets -----------
 
-# DD
+# DD - merger in August 2017
 DDratio <- 1.2820 # taken from the SEC filings for the merger!
 
 DD <- DD1 |>
@@ -234,6 +234,7 @@ DD <- DD1 |>
   dplyr::bind_rows(DD2 |> dplyr::filter(DATES >= as.Date('2017-09-01'))) |>
   dplyr::arrange(DATES)
 
+# not needed anymore, would cause confusions later on
 rm(DD1,DD2)
 
 # 2.E Creating Monthly Data Sets ------------------------------------------
@@ -329,6 +330,8 @@ for (yr in DOW30Years) {
   assign(paste0('DOW', yr), year_list[order(intercepts, decreasing = TRUE)], envir = .GlobalEnv)
 }
 
+# 5. Vanilla CAPM Ranking -------------------------------------------------
+
 All_CAPM_Summary <- lapply(DOW30Years, function(yr) {
   year_list <- get(paste0('DOW', yr))
   
@@ -339,6 +342,76 @@ All_CAPM_Summary <- lapply(DOW30Years, function(yr) {
     row.names = NULL)}) |>
   setNames(DOW30Years)
 
+# exporting the results per year
+writexl::write_xlsx(lapply(All_CAPM_Summary, head, 10), path = 'C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/Ranking Results/VanillaCAPM.xlsx')
+
+# WORK IN PROGRESS --------------------------------------------------------
+
+# WRONG CORR MATRIX?
+# simulRank <- function(year){
+#   df <- All_CAPM_Summary[[as.character(year)]]
+#   covmat <- diag(df$se^2)
+#   simRankInt <- csranks::csranks(
+#     x = df$alpha_hat,
+#     Sigma = covmat,
+#     simul = TRUE
+#   )
+#   return(simRankInt)
+# }
+
+simulRank(2015)
+
+CAPMcov <- function(yearList, num_months = 60){
+  symbols     <- names(yearList)
+  p           <- length(symbols)
+  alpha_hat   <- sapply(yearList, function(x) x$intercept)
+  se_vec      <- sapply(yearList, function(x) x$SE)
+  resids_list <- lapply(yearList, function(x) residuals(x$summary))
+  resids_mat  <- do.call(cbind, resids_list)
+  colnames(resids_mat) <- symbols
+  corr_mat <- cor(resids_mat)
+  Sigma <- outer(se_vec, se_vec) * corr_mat
+  list(
+    df = data.frame(
+      symbol    = symbols,
+      alpha_hat = alpha_hat,
+      se        = se_vec,
+      stringsAsFactors = FALSE
+    ),
+    Sigma = Sigma
+  )
+}
+
+capm_2025  <- CAPMcov(DOW2025)
+df25       <- capm_2025$df
+Sigma_2025 <- capm_2025$Sigma
+
+simRankInt_2025 <- csranks::csranks(
+  x     = df25$alpha_hat,
+  Sigma = Sigma_2025,
+  coverage = 0.99,
+  simul = TRUE
+)
+
+tau10_idx_2025 <- csranks::cstaubest(
+  x     = df25$alpha_hat,
+  Sigma = Sigma_2025,
+  tau   = 10,
+  coverage = 0.99
+)
+
+tau10_stocks_2025 <- df25$symbol[tau10_idx_2025]
 
 
+tau10_99 <- df25$symbol[csranks::cstaubest(x = df25$alpha_hat, Sigma = Sigma_2025, tau = 10, coverage = 0.99)]
+tau10_95 <- df25$symbol[csranks::cstaubest(x = df25$alpha_hat, Sigma = Sigma_2025, tau = 10, coverage = 0.95)]
+tau10_90 <- df25$symbol[csranks::cstaubest(x = df25$alpha_hat, Sigma = Sigma_2025, tau = 10, coverage = 0.90)]
+tau10_80 <- df25$symbol[csranks::cstaubest(x = df25$alpha_hat, Sigma = Sigma_2025, tau = 10, coverage = 0.80)]
+tau10_50 <- df25$symbol[csranks::cstaubest(x = df25$alpha_hat, Sigma = Sigma_2025, tau = 10, coverage = 0.50)]
+
+cat("99% Coverage (alpha = 0.01):", length(tau10_99), "stocks\n")
+cat("95% Coverage (alpha = 0.05):", length(tau10_95), "stocks\n")
+cat("90% Coverage (alpha = 0.10):", length(tau10_90), "stocks\n")
+cat("80% Coverage (alpha = 0.20):", length(tau10_80), "stocks\n")
+cat("50% Coverage (alpha = 0.50):", length(tau10_50), "stocks\n")
 
