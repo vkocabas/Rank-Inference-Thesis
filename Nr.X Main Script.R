@@ -1,11 +1,12 @@
 # Rank-Inference Thesis
 # Nr.X Main Script
-# Author: Venüs Kocabas
+# Author: Ven??s Kocabas
 # Last Updated: 31.10.2026
 
 # 0. Importing Libraries --------------------------------------------------
 
-libraries <- c('dplyr', 'tidyr', 'readxl', 'writexl', 'lubridate', 'tidyquant', 'csranks')
+libraries <- c('dplyr', 'tidyr', 'readxl', 'writexl', 'lubridate',
+               'tidyquant', 'csranks', 'stringr')
 missingLibs <- libraries[!(libraries %in% installed.packages()[, 'Package'])]
 if (length(missingLibs) > 0) install.packages(missingLibs)
 invisible(lapply(libraries, library, character.only = TRUE))
@@ -218,9 +219,14 @@ for (i in seq_along(mappingSheet)) {
 
 # 2.C Adding the SPY Data Set ---------------------------------------------
 
-load('C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/SPYdata.Rda')
-SPY_monthly <- lastTrade(SPY) |>
-  MonthlyReturns(adjprcol = adjusted)
+SPY <- readxl::read_xlsx("C:/Users/user/Desktop/THESIS/Rank-Inference-Thesis/DoD data/SPY Data.xlsx") |>
+  dplyr::rename_with(~ stringr::str_extract(., "(?<=\\().+?(?=\\))")) |>
+  dplyr::mutate(marketdate = as.Date(marketdate)) |>
+  dplyr::filter(marketdate >= '1999-12-31') |>
+  dplyr::rename(date = marketdate)
+
+SPY_monthly <- lastTrade(SPY, datecol = date) |>
+  MonthlyReturns(adjprcol = adjclose)
 
 # 2.D Additional Individual Adjustments for the DOW30 Data Sets -----------
 
@@ -359,7 +365,7 @@ writexl::write_xlsx(lapply(All_CAPM_Summary, head, 10), path = 'C:/Users/user/De
 #   return(simRankInt)
 # }
 
-simulRank(2015)
+# simulRank(2015)
 
 CAPMcov <- function(yearList, num_months = 60){
   symbols     <- names(yearList)
@@ -415,3 +421,71 @@ cat("90% Coverage (alpha = 0.10):", length(tau10_90), "stocks\n")
 cat("80% Coverage (alpha = 0.20):", length(tau10_80), "stocks\n")
 cat("50% Coverage (alpha = 0.50):", length(tau10_50), "stocks\n")
 
+# INSPECTION R SQUARE + ADJ R SQUARE --------------------------------------
+
+R2Inspection <- function(model_list) {
+  res_matrix <- sapply(model_list, function(item) {
+    c(R_Squared     = item$summary$r.squared,
+      Adj_R_Squared = item$summary$adj.r.squared)
+  })
+  df <- as.data.frame(t(res_matrix))
+  df$Ticker <- rownames(df)
+  rownames(df) <- NULL
+  df <- df[, c("Ticker", "R_Squared", "Adj_R_Squared")]
+  return(df)
+}
+
+# R2Inspection(DOW2020) # problem with DOW WILL BE FIXED (merger stuff)
+
+TEST <- rbind(cbind(year = '2015',R2Inspection(DOW2015)),
+              cbind(year = '2016',R2Inspection(DOW2016)),
+              cbind(year = '2017',R2Inspection(DOW2017)),
+              cbind(year = '2018',R2Inspection(DOW2018)),
+              cbind(year = '2019',R2Inspection(DOW2019)),
+              # cbind(year = '2020',R2Inspection(DOW2020)),
+              cbind(year = '2021',R2Inspection(DOW2021)),
+              cbind(year = '2022',R2Inspection(DOW2022)),
+              cbind(year = '2023',R2Inspection(DOW2023)),
+              cbind(year = '2024',R2Inspection(DOW2024)),
+              cbind(year = '2025',R2Inspection(DOW2025)))
+
+TEST[which.max(TEST$Adj_R_Squared), ]
+TEST[which.min(TEST$Adj_R_Squared), ]
+TEST[(TEST$Adj_R_Squared)< 0, ]
+
+mean(TEST$Adj_R_Squared)
+median(TEST$Adj_R_Squared)
+var(TEST$Adj_R_Squared)
+
+hist(TEST$Adj_R_Squared, 
+     breaks = 10, 
+     col = "darkgray", 
+     main = "Histogram of Adj R-Squared", 
+     xlab = "Adjusted R-Squared")
+
+boxplot(TEST$Adj_R_Squared, horizontal = TRUE)
+stripchart(TEST$Adj_R_Squared, method = "jitter", pch = 1, add = TRUE)
+
+
+# checks with claude
+sd(df25$alpha_hat)      # cross-sectional spread of alphas
+mean(df25$se)           # typical estimation error
+range(df25$alpha_hat)
+
+r <- csranks::csranks(df25$alpha_hat, Sigma = Sigma_2025, coverage = 0.50, simul = TRUE)
+str(r)                  # look at the lower/upper rank bounds
+
+out <- data.frame(symbol = df25$symbol, alpha = df25$alpha_hat, se = df25$se, L = r$L, U = r$U)
+print(out)    # are the wide-U stocks the high-SE ones?
+r_pw <- csranks::csranks(df25$alpha_hat, Sigma = Sigma_2025, coverage = 0.50, simul = FALSE)
+data.frame(df25$symbol, r_pw$L, r_pw$U)    # does the width shrink noticeably?
+
+
+# NVDA sensitivity: does anything remain once NVDA is removed?
+keep <- df25$symbol != "NVDA"
+r_x <- csranks::csranks(df25$alpha_hat[keep], Sigma = Sigma_2025[keep, keep],
+                        coverage = 0.50, simul = FALSE)
+range(r_x$L); range(r_x$U)
+
+# Is alpha related to dividend yield? (needs a yield vector for the 2020-2024 window)
+# cor(df25$alpha_hat, div_yield, method = "spearman")
